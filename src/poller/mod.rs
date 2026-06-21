@@ -1,17 +1,21 @@
 use std::{io, os::fd::RawFd};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
+#[allow(dead_code)]
 pub enum EventKind {
     Server,
     Client,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct EventObject {
     pub fd: RawFd,
     pub kind: EventKind,
 }
 
+#[allow(dead_code)]
 impl EventObject {
     pub fn server(fd: RawFd) -> Self {
         Self {
@@ -47,6 +51,7 @@ impl EventObject {
     }
 }
 
+#[allow(dead_code)]
 pub trait Poller {
     fn new() -> io::Result<Self>
     where
@@ -56,14 +61,19 @@ pub trait Poller {
     fn wait(&mut self, timeout_ms: i32) -> io::Result<Vec<EventObject>>;
 }
 
+#[allow(dead_code)]
 #[cfg(target_os = "linux")]
 mod epoll;
 
+#[allow(dead_code)]
 #[cfg(target_os = "macos")]
 mod kqueue;
 
+#[allow(dead_code)]
 #[cfg(target_os = "linux")]
 pub use epoll::OsPoller;
 
+#[allow(dead_code)]
+#[allow(unused_imports)]
 #[cfg(target_os = "macos")]
 pub use kqueue::OsPoller;

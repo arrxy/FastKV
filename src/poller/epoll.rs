@@ -16,13 +16,10 @@ pub struct OsPoller {
 impl Poller for OsPoller {
     fn new() -> io::Result<Self> {
         let epoll_fd = unsafe { epoll_create1(0) };
-
         if epoll_fd == -1 {
             return Err(io::Error::last_os_error());
         }
-
         let events = vec![epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
-
         Ok(Self { epoll_fd, events })
     }
 
@@ -31,10 +28,8 @@ impl Poller for OsPoller {
             events: EPOLLIN as u32,
             u64: event_object.encode() as u64,
         };
-
         let result =
             unsafe { epoll_ctl(self.epoll_fd, EPOLL_CTL_ADD, event_object.fd, &mut event) };
-
         if result == -1 {
             return Err(io::Error::last_os_error());
         }
@@ -44,11 +39,9 @@ impl Poller for OsPoller {
 
     fn delete(&self, fd: RawFd) -> io::Result<()> {
         let result = unsafe { epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, fd, ptr::null_mut()) };
-
         if result == -1 {
             return Err(io::Error::last_os_error());
         }
-
         Ok(())
     }
 
@@ -65,14 +58,11 @@ impl Poller for OsPoller {
         if nevents == -1 {
             return Err(io::Error::last_os_error());
         }
-
         let mut ready = Vec::with_capacity(nevents as usize);
-
         for i in 0..nevents as usize {
             let data = self.events[i].u64 as usize;
             ready.push(EventObject::decode(data));
         }
-
         Ok(ready)
     }
 }

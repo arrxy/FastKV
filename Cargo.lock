@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "dotenvy",
  "libc",
+ "pollio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -90,6 +91,15 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pollio"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e10696783b5524745fc2d7b9229ded482e56459fa485bcc5d97915fa7bd228c"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "powerfmt"

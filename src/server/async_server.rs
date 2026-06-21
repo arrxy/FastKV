@@ -2,7 +2,7 @@ use crate::config::config::Config;
 use crate::core::cmd::RedisCommand;
 use crate::core::eval::eval_and_respond;
 use crate::core::resp;
-use crate::poller::{EventKind, EventObject, OsPoller, Poller};
+use pollio::{EventKind, EventObject, OsPoller, Poller};
 use crate::rk_info;
 
 use std::collections::HashMap;
