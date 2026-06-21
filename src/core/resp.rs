@@ -25,6 +25,12 @@ impl fmt::Display for Value {
     }
 }
 
+impl Default for Value {
+    fn default() -> Self {
+        Value::Null
+    }
+}
+
 pub fn decode(data: &[u8]) -> Result<Value, Error> {
     if data.is_empty() {
         return Err(Error::new(ErrorKind::InvalidData, "Empty data"));
@@ -151,6 +157,7 @@ pub fn encode(value: &Value) -> Result<Vec<u8>, Error> {
         Value::Null => Ok(b"$-1\r\n".to_vec()),
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap};

@@ -30,11 +30,3 @@ fn eval_ping(args: &[String], client_stream: &mut TcpStream) -> Result<(), std::
     client_stream.write_all(&encode(&response)?).unwrap();
     Ok(())
 }
-
-fn eval_echo(cmd: &RedisCommand, client_stream: &mut TcpStream) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-fn eval_set(cmd: &RedisCommand, client_stream: &mut TcpStream) -> Result<(), std::io::Error> {
-    Ok(())
-}
