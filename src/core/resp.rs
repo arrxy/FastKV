@@ -100,6 +100,14 @@ fn decode_array(data: &[u8]) -> Result<(Value, usize), Error> {
     Ok((Value::Array(values), pos))
 }
 
+pub fn decode_array_string(data: &[u8]) -> Result<Vec<String>, Error> {
+    let value = decode(data)?;
+    match value {
+        Value::Array(values) => Ok(values.into_iter().map(|v| v.to_string()).collect()),
+        _ => Err(Error::new(ErrorKind::InvalidData, "Invalid data")),
+    }
+}
+
 fn read_len(data: &[u8]) -> Result<(usize, usize), Error> {
     let mut pos: usize = 0;
     let mut len: usize = 0;
@@ -114,6 +122,35 @@ fn read_len(data: &[u8]) -> Result<(usize, usize), Error> {
     Ok((0, 0))
 }
 
+pub fn encode(value: &Value) -> Result<Vec<u8>, Error> {
+    match value {
+        Value::SimpleString(s) => Ok(format!("+{}\r\n", s).into_bytes()),
+        Value::Error(s) => Ok(format!("-{}\r\n", s).into_bytes()),
+        Value::Integer(i) => Ok(format!(":{}\r\n", i).into_bytes()),
+        Value::BulkString(bytes) => {
+            let mut out = Vec::new();
+
+            out.extend_from_slice(format!("${}\r\n", bytes.len()).as_bytes());
+            out.extend_from_slice(bytes);
+            out.extend_from_slice(b"\r\n");
+
+            Ok(out)
+        }
+        Value::Array(values) => {
+            let mut out = Vec::new();
+
+            out.extend_from_slice(format!("*{}\r\n", values.len()).as_bytes());
+
+            for value in values {
+                let encoded = encode(value)?;
+                out.extend_from_slice(&encoded);
+            }
+
+            Ok(out)
+        }
+        Value::Null => Ok(b"$-1\r\n".to_vec()),
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap};

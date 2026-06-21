@@ -1,6 +1,22 @@
 use crate::config::config::Config;
+use crate::core::cmd::RedisCommand;
+use crate::core::eval::eval_and_respond;
+use crate::core::resp;
 use std::io::{ErrorKind, prelude::*};
 use std::net::{TcpListener, TcpStream};
+
+fn read_client_command(client_stream: &mut TcpStream) -> Result<RedisCommand, std::io::Error> {
+    let mut buffer: [u8; 1024] = [0; 1024];
+    let n: usize = match client_stream.read(&mut buffer) {
+        Ok(n) => n,
+        Err(e) => return Err(e),
+    };
+    if n == 0 {
+        return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "Client closed connection"));
+    }
+    let tokens = resp::decode_array_string(&buffer[..n])?;
+    Ok(RedisCommand::new(tokens[0].clone().to_uppercase(), tokens[1..].to_vec()))
+}
 
 pub fn run_sync_tcp_server() {
     let config: Config = Config::new();
@@ -31,7 +47,7 @@ pub fn run_sync_tcp_server() {
             }
         };
         loop {
-            let cmd: String = match read_client_command(&mut client_stream) {
+            let cmd = match read_client_command(&mut client_stream) {
                 Ok(cmd) => cmd,
                 Err(e) => {
                     con_clients -= 1;
@@ -57,22 +73,13 @@ pub fn run_sync_tcp_server() {
     }
 }
 
-fn read_client_command(client_stream: &mut TcpStream) -> Result<String, std::io::Error> {
-    let mut buffer: [u8; 1024] = [0; 1024];
-    let n: usize = match client_stream.read(&mut buffer) {
-        Ok(n) => n,
-        Err(e) => return Err(e),
-    };
-    if n == 0 {
-        return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "Client closed connection"));
-    }
-    let cmd: String = String::from_utf8_lossy(&buffer[..n]).to_string();
-    Ok(cmd)
-}
 
-fn respond_to_client(cmd: &str, client_stream: &mut TcpStream) -> Result<(), std::io::Error> {
-    match client_stream.write_all(cmd.as_bytes()) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e),
-    }
+fn respond_to_client(cmd: &RedisCommand, client_stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    let response = match eval_and_respond(cmd, client_stream) {
+        Ok(_) => {},
+        Err(e) => {
+            client_stream.write_all(e.to_string().as_bytes()).unwrap();
+        }
+    };
+    Ok(response)
 }
