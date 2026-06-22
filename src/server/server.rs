@@ -14,8 +14,6 @@ pub struct Server<P: CommandProcessor> {
     connections: HashMap<RawFd, TcpStream>,
     con_clients: u64,
     events_buf: Vec<EventObject>,
-    #[allow(dead_code)]
-    config: Config,
     processor: P,
 }
 
@@ -29,7 +27,6 @@ impl<P: CommandProcessor> Server<P> {
             connections: HashMap::new(),
             con_clients: 0,
             events_buf: Vec::new(),
-            config: Config::new(),
             processor,
         }
     }
