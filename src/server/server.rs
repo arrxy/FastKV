@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, prelude::*};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Server<P: CommandProcessor> {
     listener: TcpListener,
@@ -15,11 +16,13 @@ pub struct Server<P: CommandProcessor> {
     con_clients: u64,
     events_buf: Vec<EventObject>,
     processor: P,
+    last_cleanup_time: u128,
+    cleanup_interval: u128,
 }
 
 impl<P: CommandProcessor> Server<P> {
     pub fn new(processor: P) -> Self {
-        let (listener, poller) = Self::boot_up_server().unwrap();
+        let (listener, poller, cleanup_interval) = Self::boot_up_server().unwrap();
         Self {
             listener,
             poller,
@@ -27,12 +30,18 @@ impl<P: CommandProcessor> Server<P> {
             con_clients: 0,
             events_buf: Vec::new(),
             processor,
+            last_cleanup_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+            cleanup_interval
         }
     }
 
     pub fn run(&mut self) -> Result<(), std::io::Error> {
         loop {
-            match self.poller.wait(-1) {
+            if SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() - self.last_cleanup_time >= self.cleanup_interval {
+                self.processor.cleanup_expired_keys()?;
+                self.last_cleanup_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+            }
+            match self.poller.wait(self.cleanup_interval as i32) {
                 Ok(events) => {
                     self.events_buf.clear();
                     self.events_buf.extend_from_slice(events);
@@ -69,9 +78,10 @@ impl<P: CommandProcessor> Server<P> {
         self.con_clients = self.con_clients.saturating_sub(1);
     }
 
-    fn boot_up_server() -> Result<(TcpListener, OsPoller), std::io::Error> {
+    fn boot_up_server() -> Result<(TcpListener, OsPoller, u128), std::io::Error> {
         let config: Config = Config::new();
         let address = format!("{}:{}", config.get_host(), config.get_port());
+        let cleanup_interval = config.get_cleanup_interval();
 
         rk_info!("[BOOT] server starting \n address = {}", address);
         let listener: TcpListener = TcpListener::bind(&address)?;
@@ -86,7 +96,7 @@ impl<P: CommandProcessor> Server<P> {
         let poller = OsPoller::new()?;
         poller.add(EventObject::server(listener_fd))?;
 
-        Ok((listener, poller))
+        Ok((listener, poller, cleanup_interval))
     }
 
     fn handle_server_events(&mut self) -> Result<(), std::io::Error> {

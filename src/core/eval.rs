@@ -4,11 +4,12 @@ use std::{
     net::TcpStream,
     time::{SystemTime, UNIX_EPOCH},
 };
+use rand::RngExt;
 
-use crate::core::{
+use crate::{core::{
     cmd::RedisCommand,
     resp::{Value, encode},
-};
+}};
 
 pub struct RedisValue {
     pub value: Value,
@@ -25,6 +26,46 @@ impl RedisState {
             data: HashMap::new(),
         }
     }
+
+    fn sample_hashmap<K, V>(map: &HashMap<K, V>, n: usize) -> Vec<(&K, &V)> {
+        let mut rng = rand::rng();
+        let mut reservoir: Vec<(&K, &V)> = Vec::with_capacity(n);
+        for (i, item) in map.iter().enumerate() {
+            if i < n {
+                reservoir.push(item);
+            } else {
+                let j = rng.random_range(0..=i);
+                if j < n {
+                    reservoir[j] = item;
+                }
+            }
+        }
+        reservoir
+    }
+
+    pub fn cleanup_expired_keys(&mut self) {
+        let now = self.now_millis();
+        loop {
+            let sample = Self::sample_hashmap(&self.data, 20);
+            if sample.is_empty() {
+                break;
+            }
+            let expired_keys: Vec<String> = sample
+                .iter()
+                .filter(|(_, v)| v.expires_at != -1 && v.expires_at <= now)
+                .map(|(k, _)| (*k).clone())
+                .collect();
+            let expired_ratio = expired_keys.len() as f64 / sample.len() as f64;
+            for key in expired_keys {
+                self.data.remove(&key);
+            }
+    
+            if expired_ratio <= 0.25 {
+                break;
+            }
+        }
+    }
+
     pub fn eval_and_respond(
         &mut self,
         cmd: &RedisCommand,
@@ -271,7 +312,7 @@ impl RedisState {
             Some(v) => {
                 v.expires_at = expires_at;
             }
-            
+
             None => {
                 client_stream.write_all(&encode(&Value::Integer(0))?)?;
                 return Ok(());

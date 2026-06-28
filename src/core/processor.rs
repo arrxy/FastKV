@@ -37,4 +37,9 @@ impl CommandProcessor for RespCommandProcessor {
 
         self.state.eval_and_respond(&cmd, client_stream)
     }
+
+    fn cleanup_expired_keys(&mut self) -> io::Result<()> {
+        self.state.cleanup_expired_keys();
+        Ok(())
+    }
 }
