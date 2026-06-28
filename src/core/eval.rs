@@ -93,78 +93,67 @@ impl RedisState {
         Ok(())
     }
 
+    fn reject<T>(
+        &self,
+        error: &str,
+        client_stream: &mut TcpStream,
+    ) -> Result<T, std::io::Error> {
+        self.send_error(error, client_stream)?;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid input",
+        ))
+    }
+
     fn validate_and_get_set_args(
         &mut self,
         args: &[String],
         client_stream: &mut TcpStream,
     ) -> Result<(String, Value, Option<i64>), std::io::Error> {
-        let mut expires_at: Option<i64> = None;
         if args.len() != 2 && args.len() != 4 {
-            self.send_error(
+            return self.reject(
                 "ERR wrong number of arguments for 'set' command",
                 client_stream,
-            )?;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid input",
-            ));
+            );
         }
+
+        let mut expires_at: Option<i64> = None;
         if args.len() == 4 {
-            if !args[2].eq_ignore_ascii_case("EX") {
-                self.send_error("ERR syntax error", client_stream)?;
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Invalid input",
-                ));
-            }
-
-            let seconds: i64 = match args[3].parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    self.send_error("ERR value is not an integer or out of range", client_stream)?;
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "Invalid input",
-                    ));
-                }
+            let unit_ms: i64 = match args[2].to_uppercase().as_str() {
+                "EX" => 1000,
+                "PX" => 1,
+                _ => return self.reject("ERR syntax error", client_stream),
             };
-
-            if seconds <= 0 {
-                self.send_error("ERR invalid expire time in 'set' command", client_stream)?;
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Invalid input",
-                ));
-            }
-
-            let now_ms = self.now_millis();
-
-            let ttl_ms = match seconds.checked_mul(1000) {
-                Some(v) => v,
-                None => {
-                    self.send_error("ERR value is not an integer or out of range", client_stream)?;
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "Invalid input",
-                    ));
-                }
-            };
-
-            expires_at = match now_ms.checked_add(ttl_ms) {
-                Some(v) => Some(v),
-                None => {
-                    self.send_error("ERR value is not an integer or out of range", client_stream)?;
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "Invalid input",
-                    ));
-                }
-            };
+            expires_at = Some(self.parse_expiry(&args[3], unit_ms, client_stream)?);
         }
 
         let key = args[0].clone();
         let value = Value::BulkString(args[1].clone().into_bytes());
-        return Ok((key, value, expires_at));
+        Ok((key, value, expires_at))
+    }
+
+    fn parse_expiry(
+        &self,
+        amount: &str,
+        unit_ms: i64,
+        client_stream: &mut TcpStream,
+    ) -> Result<i64, std::io::Error> {
+        let amount: i64 = match amount.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                return self.reject("ERR value is not an integer or out of range", client_stream);
+            }
+        };
+        if amount <= 0 {
+            return self.reject("ERR invalid expire time in 'set' command", client_stream);
+        }
+        match amount
+            .checked_mul(unit_ms)
+            .and_then(|ttl_ms| self.now_millis().checked_add(ttl_ms))
+        {
+            Some(expires_at) => Ok(expires_at),
+            None => self.reject("ERR value is not an integer or out of range", client_stream),
+        }
     }
 
     fn eval_set(
