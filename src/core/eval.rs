@@ -36,8 +36,8 @@ impl RedisState {
             "SET" => self.eval_set(&cmd.args, client_stream),
             "GET" => self.eval_get(&cmd.args, client_stream),
             "TTL" => self.eval_ttl(&cmd.args, client_stream),
-            "DEL" => Ok(()),
-            "EXPIRE" => Ok(()),
+            "DEL" => self.eval_del(&cmd.args, client_stream),
+            "EXPIRE" => self.eval_expire(&cmd.args, client_stream),
             _ => self.eval_ping(&cmd.args, client_stream),
         }
     }
@@ -230,6 +230,54 @@ impl RedisState {
         }
         let response_in_seconds = Value::Integer((value.expires_at - self.now_millis()) / 1000);
         client_stream.write_all(&encode(&response_in_seconds)?)?;
+        Ok(())
+    }
+
+    fn eval_del(
+        &mut self,
+        args: &[String],
+        client_stream: &mut TcpStream,
+    ) -> Result<(), std::io::Error> {
+        if args.len() == 0 {
+            self.send_error("ERR wrong number of arguments for 'del' command", client_stream)?;
+            return Ok(());
+        }
+        let mut deleted_count = 0;
+        for key in args {
+            if self.data.remove(key).is_some() {
+                deleted_count += 1;
+            }
+        }
+        let response = Value::Integer(deleted_count);
+        client_stream.write_all(&encode(&response)?)?;
+        Ok(())
+    }
+
+    fn eval_expire(
+        &mut self,
+        args: &[String],
+        client_stream: &mut TcpStream,
+    ) -> Result<(), std::io::Error> {
+        if args.len() != 2 {
+            self.send_error("ERR wrong number of arguments for 'expire' command", client_stream)?;
+            return Ok(());
+        };
+        let key = &args[0];
+        let expires_at = match self.parse_expiry(&args[1], 1000, client_stream) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
+        match self.data.get_mut(key) {
+            Some(v) => {
+                v.expires_at = expires_at;
+            }
+            
+            None => {
+                client_stream.write_all(&encode(&Value::Integer(0))?)?;
+                return Ok(());
+            }
+        }
+        client_stream.write_all(&encode(&Value::Integer(1))?)?;
         Ok(())
     }
 }
