@@ -10,6 +10,6 @@ use server::server::Server;
 fn main() {
     let _log_guard = logger::init_logger();
     rk_info!("Starting RoomKV server");
-    Server::new(RespCommandProcessor).run().unwrap();
+    Server::new(RespCommandProcessor::new()).run().unwrap();
     rk_info!("RoomKV server stopped");
 }

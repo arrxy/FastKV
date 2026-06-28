@@ -1,7 +1,7 @@
 use crate::config::config::Config;
 use crate::protocol::CommandProcessor;
-use pollio::{EventKind, EventObject, OsPoller, Poller};
 use crate::rk_info;
+use pollio::{EventKind, EventObject, OsPoller, Poller};
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, prelude::*};
@@ -18,7 +18,6 @@ pub struct Server<P: CommandProcessor> {
 }
 
 impl<P: CommandProcessor> Server<P> {
-
     pub fn new(processor: P) -> Self {
         let (listener, poller) = Self::boot_up_server().unwrap();
         Self {
@@ -94,6 +93,7 @@ impl<P: CommandProcessor> Server<P> {
         loop {
             match self.listener.accept() {
                 Ok((stream, _address)) => {
+                    rk_info!("[SERVER] accepted connection from {}", _address);
                     stream.set_nonblocking(true)?;
                     stream.set_nodelay(true)?;
                     let client_fd = stream.as_raw_fd();
@@ -104,6 +104,7 @@ impl<P: CommandProcessor> Server<P> {
 
                 // If the listener is blocked, break the loop. exit #1: accept queue is empty
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    rk_info!("[SERVER] accept queue is empty");
                     break;
                 }
 
