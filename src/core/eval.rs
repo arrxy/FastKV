@@ -1,8 +1,8 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::Write,
     net::TcpStream,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use rand::RngExt;
 
@@ -18,19 +18,21 @@ pub struct RedisValue {
 
 pub struct RedisState {
     data: HashMap<String, RedisValue>,
+    volatile_keys: HashSet<String>,
 }
 
 impl RedisState {
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),
+            volatile_keys: HashSet::new(),
         }
     }
 
-    fn sample_hashmap<K, V>(map: &HashMap<K, V>, n: usize) -> Vec<(&K, &V)> {
+    fn sample_iter<T>(iter: impl Iterator<Item = T>, n: usize) -> Vec<T> {
         let mut rng = rand::rng();
-        let mut reservoir: Vec<(&K, &V)> = Vec::with_capacity(n);
-        for (i, item) in map.iter().enumerate() {
+        let mut reservoir: Vec<T> = Vec::with_capacity(n);
+        for (i, item) in iter.enumerate() {
             if i < n {
                 reservoir.push(item);
             } else {
@@ -43,24 +45,31 @@ impl RedisState {
         reservoir
     }
 
+    fn remove_key(&mut self, key: &str) -> Option<RedisValue> {
+        self.volatile_keys.remove(key);
+        self.data.remove(key)
+    }
+
     pub fn cleanup_expired_keys(&mut self) {
         let now = self.now_millis();
+        let start = Instant::now();
+        const TIME_BUDGET_MS: u128 = 25;
         loop {
-            let sample = Self::sample_hashmap(&self.data, 20);
+            let sample: Vec<String> = Self::sample_iter(self.volatile_keys.iter().cloned(), 20);
             if sample.is_empty() {
                 break;
             }
             let expired_keys: Vec<String> = sample
                 .iter()
-                .filter(|(_, v)| v.expires_at != -1 && v.expires_at <= now)
-                .map(|(k, _)| (*k).clone())
+                .filter(|k| self.data.get(*k).map_or(false, |v| v.expires_at <= now))
+                .cloned()
                 .collect();
             let expired_ratio = expired_keys.len() as f64 / sample.len() as f64;
-            for key in expired_keys {
-                self.data.remove(&key);
+            for key in &expired_keys {
+                self.remove_key(key);
             }
-    
-            if expired_ratio <= 0.25 {
+
+            if expired_ratio <= 0.25 || start.elapsed().as_millis() >= TIME_BUDGET_MS {
                 break;
             }
         }
@@ -207,6 +216,14 @@ impl RedisState {
             Err(_) => return Ok(()),
         };
 
+        match expires_at {
+            Some(_) => {
+                self.volatile_keys.insert(key.clone());
+            }
+            None => {
+                self.volatile_keys.remove(&key);
+            }
+        }
         self.data.insert(
             key,
             RedisValue {
@@ -238,7 +255,7 @@ impl RedisState {
             }
         };
         if value.expires_at < self.now_millis() && value.expires_at != -1 {
-            self.data.remove(&key);
+            self.remove_key(&key);
             client_stream.write_all(&encode(&Value::Null)?)?;
             return Ok(());
         }
@@ -265,7 +282,7 @@ impl RedisState {
             return Ok(());
         }
         if value.expires_at < self.now_millis() {
-            self.data.remove(&key);
+            self.remove_key(&key);
             client_stream.write_all(&encode(&Value::Integer(-2))?)?;
             return Ok(());
         }
@@ -285,7 +302,7 @@ impl RedisState {
         }
         let mut deleted_count = 0;
         for key in args {
-            if self.data.remove(key).is_some() {
+            if self.remove_key(key).is_some() {
                 deleted_count += 1;
             }
         }
@@ -311,6 +328,7 @@ impl RedisState {
         match self.data.get_mut(key) {
             Some(v) => {
                 v.expires_at = expires_at;
+                self.volatile_keys.insert(key.clone());
             }
 
             None => {
@@ -320,5 +338,54 @@ impl RedisState {
         }
         client_stream.write_all(&encode(&Value::Integer(1))?)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    // A connected loopback stream; the server side is returned so the
+    // connection isn't reset and small writes don't fail.
+    fn loopback() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn cleanup_removes_only_expired_volatile_keys() {
+        let mut state = RedisState::new();
+        let (mut s, _server) = loopback();
+
+        state.eval_set(&argv(&["k1", "v", "PX", "1"]), &mut s).unwrap(); // volatile, expires fast
+        state.eval_set(&argv(&["k2", "v"]), &mut s).unwrap(); // no TTL
+        assert!(state.volatile_keys.contains("k1"));
+        assert!(!state.volatile_keys.contains("k2"));
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        state.cleanup_expired_keys();
+
+        assert!(state.data.get("k1").is_none(), "expired key should be swept");
+        assert!(!state.volatile_keys.contains("k1"), "index must drop swept key");
+        assert!(state.data.get("k2").is_some(), "non-volatile key untouched");
+    }
+
+    #[test]
+    fn overwriting_volatile_key_without_ttl_clears_index() {
+        let mut state = RedisState::new();
+        let (mut s, _server) = loopback();
+
+        state.eval_set(&argv(&["k", "v", "EX", "100"]), &mut s).unwrap();
+        assert!(state.volatile_keys.contains("k"));
+        state.eval_set(&argv(&["k", "v2"]), &mut s).unwrap(); // overwrite, no TTL
+        assert!(!state.volatile_keys.contains("k"), "stale TTL index must clear");
     }
 }

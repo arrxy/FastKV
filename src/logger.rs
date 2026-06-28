@@ -1,3 +1,4 @@
+#[cfg(not(feature = "local-logs"))]
 use tracing_subscriber::fmt::format::FmtSpan;
 
 pub struct LoggerGuard {
