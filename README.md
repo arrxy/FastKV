@@ -1,14 +1,14 @@
-# RoomKV
+# FastKV
 
 A Redis-compatible in-memory data store built for live video conferencing — room state, presence, signaling, and session metadata with a familiar protocol and client ecosystem.
 
 > **Status: Under active development.** The server currently accepts TCP connections and echoes input. RESP parsing and Redis commands are in progress.
 
-## Why RoomKV?
+## Why FastKV?
 
 Video conferencing backends lean heavily on fast, ephemeral state: who is in a room, mute/camera flags, hand-raise queues, breakout assignments, and short-lived signaling payloads. Redis is a common choice, but general-purpose deployments don't always match the access patterns and operational needs of real-time rooms.
 
-RoomKV aims to be a **drop-in Redis replacement** tuned for that workload — same wire protocol and client libraries, semantics shaped around live sessions.
+FastKV aims to be a **drop-in Redis replacement** tuned for that workload — same wire protocol and client libraries, semantics shaped around live sessions.
 
 ## Current capabilities
 
@@ -28,7 +28,7 @@ RoomKV aims to be a **drop-in Redis replacement** tuned for that workload — sa
 
 ```bash
 git clone <your-repo-url>
-cd RoomKV
+cd FastKV
 cargo run
 ```
 
