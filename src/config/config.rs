@@ -63,4 +63,16 @@ impl Config {
     pub fn get_cleanup_interval(&self) -> u128 {
         self.cleanup_interval
     }
+
+    pub fn get_max_keys(&self) -> usize {
+        self.max_keys
+    }
+
+    pub fn get_eviction_sample_size(&self) -> usize {
+        self.eviction_sample_size
+    }
+
+    pub fn get_eviction_policy(&self) -> EvictionPolicy {
+        self.eviction_policy
+    }
 }

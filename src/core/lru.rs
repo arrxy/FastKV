@@ -1,9 +1,9 @@
-use crate::core::evict::Evict;
+use crate::core::eval::RedisState;
 
-pub struct LRUEvict;
+pub fn all_keys_lru_evict(state: &mut RedisState) -> Result<(), std::io::Error> {
+    Ok(())
+}
 
-impl Evict for LRUEvict {
-    fn evict(&self, key: &str) -> Result<(), std::io::Error> {
-        Ok(())
-    }
+pub fn volatile_lru_evict(state: &mut RedisState) -> Result<(), std::io::Error> {
+    Ok(())
 }

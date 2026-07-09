@@ -7,20 +7,19 @@ use std::{
 };
 
 use crate::{
-    config::config::Config,
-    core::{
-        cmd::RedisCommand,
-        resp::{Value, encode},
+    config::config::Config, core::{
+        cmd::RedisCommand, evict, resp::{Value, encode},
     },
 };
 
 pub struct RedisValue {
     pub value: Value,
     pub expires_at: i64,
-    access_count: u64,
-    last_accessed_at: i64,
+    pub access_count: u64,
+    pub last_accessed_at: i64,
 }
 
+#[derive(Copy, Clone, PartialEq)]
 pub enum EvictionPolicy {
     NoEviction,
     AllKeysRandom,
@@ -42,18 +41,13 @@ pub struct RedisState {
 
 impl RedisState {
     pub fn new() -> Self {
-        let config = Config::load();
-        let max_keys = config.get("max_keys").unwrap_or(1000);
-        let eviction_sample_size = config.get("eviction_sample_size").unwrap_or(20);
-        let eviction_policy = config
-            .get("eviction_policy")
-            .unwrap_or(EvictionPolicy::NoEviction);
+        let config = Config::new();
         Self {
             data: HashMap::new(),
             volatile_keys: HashSet::new(),
-            max_keys: 1000,
-            eviction_sample_size: 20,
-            eviction_policy: EvictionPolicy::NoEviction,
+            max_keys: config.get_max_keys(),
+            eviction_sample_size: config.get_eviction_sample_size(),
+            eviction_policy: config.get_eviction_policy(),
         }
     }
 
@@ -235,6 +229,15 @@ impl RedisState {
         args: &[String],
         client_stream: &mut TcpStream,
     ) -> Result<(), std::io::Error> {
+        while self.data.len() >= self.max_keys && self.eviction_policy != EvictionPolicy::NoEviction {
+            let before = self.data.len();
+            evict::evict(self)?;
+            let after = self.data.len();
+            if after >= before {
+                self.send_error("OOM command not allowed when used memory > 'maxmemory'.", client_stream)?;
+                return Ok(());
+            }
+        }
         let (key, value, expires_at) = match self.validate_and_get_set_args(args, client_stream) {
             Ok(v) => v,
             Err(_) => return Ok(()),
@@ -253,6 +256,8 @@ impl RedisState {
             RedisValue {
                 value,
                 expires_at: expires_at.unwrap_or(-1),
+                access_count: 0,
+                last_accessed_at: self.now_millis(),
             },
         );
 
