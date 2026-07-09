@@ -30,16 +30,28 @@ impl<P: CommandProcessor> Server<P> {
             con_clients: 0,
             events_buf: Vec::new(),
             processor,
-            last_cleanup_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-            cleanup_interval
+            last_cleanup_time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+            cleanup_interval,
         }
     }
 
     pub fn run(&mut self) -> Result<(), std::io::Error> {
         loop {
-            if SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() - self.last_cleanup_time >= self.cleanup_interval {
+            if SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                - self.last_cleanup_time
+                >= self.cleanup_interval
+            {
                 self.processor.cleanup_expired_keys()?;
-                self.last_cleanup_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+                self.last_cleanup_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
             }
             match self.poller.wait(self.cleanup_interval as i32) {
                 Ok(events) => {

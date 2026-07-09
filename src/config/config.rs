@@ -1,7 +1,12 @@
+use crate::core::eval::EvictionPolicy;
+
 pub struct Config {
     port: u16,
     host: String,
     cleanup_interval: u128,
+    max_keys: usize,
+    eviction_sample_size: usize,
+    eviction_policy: EvictionPolicy,
 }
 
 impl Config {
@@ -22,6 +27,28 @@ impl Config {
                 .unwrap_or_else(|_| "1000".to_string())
                 .parse()
                 .unwrap(),
+            max_keys: std::env::var("MAX_KEYS")
+                .unwrap_or_else(|_| "1000".to_string())
+                .parse()
+                .unwrap(),
+            eviction_sample_size: std::env::var("EVICTION_SAMPLE_SIZE")
+                .unwrap_or_else(|_| "20".to_string())
+                .parse()
+                .unwrap(),
+            eviction_policy: match std::env::var("EVICTION_POLICY")
+                .unwrap_or_else(|_| "NoEviction".to_string())
+                .as_str()
+            {
+                "NoEviction" => EvictionPolicy::NoEviction,
+                "AllKeysRandom" => EvictionPolicy::AllKeysRandom,
+                "VolatileRandom" => EvictionPolicy::VolatileRandom,
+                "AllKeysLru" => EvictionPolicy::AllKeysLru,
+                "VolatileLru" => EvictionPolicy::VolatileLru,
+                "AllKeysLfu" => EvictionPolicy::AllKeysLfu,
+                "VolatileLfu" => EvictionPolicy::VolatileLfu,
+                "VolatileTtl" => EvictionPolicy::VolatileTtl,
+                _ => EvictionPolicy::NoEviction,
+            },
         }
     }
 

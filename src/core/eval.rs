@@ -1,31 +1,59 @@
+use rand::RngExt;
 use std::{
     collections::{HashMap, HashSet},
     io::Write,
     net::TcpStream,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use rand::RngExt;
 
-use crate::{core::{
-    cmd::RedisCommand,
-    resp::{Value, encode},
-}};
+use crate::{
+    config::config::Config,
+    core::{
+        cmd::RedisCommand,
+        resp::{Value, encode},
+    },
+};
 
 pub struct RedisValue {
     pub value: Value,
     pub expires_at: i64,
+    access_count: u64,
+    last_accessed_at: i64,
+}
+
+pub enum EvictionPolicy {
+    NoEviction,
+    AllKeysRandom,
+    VolatileRandom,
+    AllKeysLru,
+    VolatileLru,
+    AllKeysLfu,
+    VolatileLfu,
+    VolatileTtl,
 }
 
 pub struct RedisState {
     data: HashMap<String, RedisValue>,
     volatile_keys: HashSet<String>,
+    pub max_keys: usize,
+    pub eviction_sample_size: usize,
+    pub eviction_policy: EvictionPolicy,
 }
 
 impl RedisState {
     pub fn new() -> Self {
+        let config = Config::load();
+        let max_keys = config.get("max_keys").unwrap_or(1000);
+        let eviction_sample_size = config.get("eviction_sample_size").unwrap_or(20);
+        let eviction_policy = config
+            .get("eviction_policy")
+            .unwrap_or(EvictionPolicy::NoEviction);
         Self {
             data: HashMap::new(),
             volatile_keys: HashSet::new(),
+            max_keys: 1000,
+            eviction_sample_size: 20,
+            eviction_policy: EvictionPolicy::NoEviction,
         }
     }
 
@@ -143,11 +171,7 @@ impl RedisState {
         Ok(())
     }
 
-    fn reject<T>(
-        &self,
-        error: &str,
-        client_stream: &mut TcpStream,
-    ) -> Result<T, std::io::Error> {
+    fn reject<T>(&self, error: &str, client_stream: &mut TcpStream) -> Result<T, std::io::Error> {
         self.send_error(error, client_stream)?;
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -238,12 +262,15 @@ impl RedisState {
     }
 
     fn eval_get(
-        & mut self,
+        &mut self,
         args: &[String],
         client_stream: &mut TcpStream,
     ) -> Result<(), std::io::Error> {
         if args.len() != 1 {
-            self.send_error("ERR wrong number of arguments for 'get' command", client_stream)?;
+            self.send_error(
+                "ERR wrong number of arguments for 'get' command",
+                client_stream,
+            )?;
             return Ok(());
         }
         let key = args[0].clone();
@@ -297,7 +324,10 @@ impl RedisState {
         client_stream: &mut TcpStream,
     ) -> Result<(), std::io::Error> {
         if args.len() == 0 {
-            self.send_error("ERR wrong number of arguments for 'del' command", client_stream)?;
+            self.send_error(
+                "ERR wrong number of arguments for 'del' command",
+                client_stream,
+            )?;
             return Ok(());
         }
         let mut deleted_count = 0;
@@ -317,7 +347,10 @@ impl RedisState {
         client_stream: &mut TcpStream,
     ) -> Result<(), std::io::Error> {
         if args.len() != 2 {
-            self.send_error("ERR wrong number of arguments for 'expire' command", client_stream)?;
+            self.send_error(
+                "ERR wrong number of arguments for 'expire' command",
+                client_stream,
+            )?;
             return Ok(());
         };
         let key = &args[0];
@@ -365,7 +398,9 @@ mod tests {
         let mut state = RedisState::new();
         let (mut s, _server) = loopback();
 
-        state.eval_set(&argv(&["k1", "v", "PX", "1"]), &mut s).unwrap(); // volatile, expires fast
+        state
+            .eval_set(&argv(&["k1", "v", "PX", "1"]), &mut s)
+            .unwrap(); // volatile, expires fast
         state.eval_set(&argv(&["k2", "v"]), &mut s).unwrap(); // no TTL
         assert!(state.volatile_keys.contains("k1"));
         assert!(!state.volatile_keys.contains("k2"));
@@ -373,8 +408,14 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         state.cleanup_expired_keys();
 
-        assert!(state.data.get("k1").is_none(), "expired key should be swept");
-        assert!(!state.volatile_keys.contains("k1"), "index must drop swept key");
+        assert!(
+            state.data.get("k1").is_none(),
+            "expired key should be swept"
+        );
+        assert!(
+            !state.volatile_keys.contains("k1"),
+            "index must drop swept key"
+        );
         assert!(state.data.get("k2").is_some(), "non-volatile key untouched");
     }
 
@@ -383,9 +424,14 @@ mod tests {
         let mut state = RedisState::new();
         let (mut s, _server) = loopback();
 
-        state.eval_set(&argv(&["k", "v", "EX", "100"]), &mut s).unwrap();
+        state
+            .eval_set(&argv(&["k", "v", "EX", "100"]), &mut s)
+            .unwrap();
         assert!(state.volatile_keys.contains("k"));
         state.eval_set(&argv(&["k", "v2"]), &mut s).unwrap(); // overwrite, no TTL
-        assert!(!state.volatile_keys.contains("k"), "stale TTL index must clear");
+        assert!(
+            !state.volatile_keys.contains("k"),
+            "stale TTL index must clear"
+        );
     }
 }
