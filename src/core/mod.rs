@@ -1,9 +1,4 @@
 pub mod cmd;
 pub mod eval;
-pub mod evict;
-pub mod lru;
-pub mod lfu;
-pub mod random_eviction;
-pub mod ttl_evict;
 pub mod processor;
 pub mod resp;

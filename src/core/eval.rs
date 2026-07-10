@@ -1,94 +1,57 @@
-use rand::RngExt;
 use std::{
-    collections::{HashMap, HashSet},
     io::Write,
     net::TcpStream,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+use chaintable::{Dict, EvictionPolicy};
 
 use crate::{
     config::config::Config, core::{
-        cmd::RedisCommand, evict, resp::{Value, encode},
+        cmd::RedisCommand, resp::{Value, encode},
     },
 };
 
 pub struct RedisValue {
     pub value: Value,
     pub expires_at: i64,
-    pub access_count: u64,
-    pub last_accessed_at: i64,
-}
-
-#[derive(Copy, Clone, PartialEq)]
-pub enum EvictionPolicy {
-    NoEviction,
-    AllKeysRandom,
-    VolatileRandom,
-    AllKeysLru,
-    VolatileLru,
-    AllKeysLfu,
-    VolatileLfu,
-    VolatileTtl,
 }
 
 pub struct RedisState {
-    data: HashMap<String, RedisValue>,
-    volatile_keys: HashSet<String>,
+    pub data: Dict<RedisValue>,
     pub max_keys: usize,
-    pub eviction_sample_size: usize,
-    pub eviction_policy: EvictionPolicy,
+    pub eviction_policy: Option<EvictionPolicy>,
 }
 
 impl RedisState {
     pub fn new() -> Self {
         let config = Config::new();
         Self {
-            data: HashMap::new(),
-            volatile_keys: HashSet::new(),
+            data: Dict::new(),
             max_keys: config.get_max_keys(),
-            eviction_sample_size: config.get_eviction_sample_size(),
             eviction_policy: config.get_eviction_policy(),
         }
     }
 
-    fn sample_iter<T>(iter: impl Iterator<Item = T>, n: usize) -> Vec<T> {
-        let mut rng = rand::rng();
-        let mut reservoir: Vec<T> = Vec::with_capacity(n);
-        for (i, item) in iter.enumerate() {
-            if i < n {
-                reservoir.push(item);
-            } else {
-                let j = rng.random_range(0..=i);
-                if j < n {
-                    reservoir[j] = item;
-                }
-            }
-        }
-        reservoir
-    }
-
-    fn remove_key(&mut self, key: &str) -> Option<RedisValue> {
-        self.volatile_keys.remove(key);
-        self.data.remove(key)
-    }
-
     pub fn cleanup_expired_keys(&mut self) {
-        let now = self.now_millis();
+        let now = self.now_millis() as u64;
         let start = Instant::now();
         const TIME_BUDGET_MS: u128 = 25;
+        let mut rng = rand::rng();
         loop {
-            let sample: Vec<String> = Self::sample_iter(self.volatile_keys.iter().cloned(), 20);
-            if sample.is_empty() {
+            let slots = self.data.sample_volatile_slots(20, &mut rng);
+            if slots.is_empty() {
                 break;
             }
-            let expired_keys: Vec<String> = sample
-                .iter()
-                .filter(|k| self.data.get(*k).map_or(false, |v| v.expires_at <= now))
-                .cloned()
+            let sampled = slots.len();
+            let expired_keys: Vec<String> = slots
+                .into_iter()
+                .filter_map(|slot| self.data.entry_ref(slot))
+                .filter(|e| e.expires_at.is_some_and(|t| t <= now))
+                .map(|e| e.key.to_string())
                 .collect();
-            let expired_ratio = expired_keys.len() as f64 / sample.len() as f64;
+            let expired_ratio = expired_keys.len() as f64 / sampled as f64;
             for key in &expired_keys {
-                self.remove_key(key);
+                self.data.remove(key);
             }
 
             if expired_ratio <= 0.25 || start.elapsed().as_millis() >= TIME_BUDGET_MS {
@@ -229,36 +192,34 @@ impl RedisState {
         args: &[String],
         client_stream: &mut TcpStream,
     ) -> Result<(), std::io::Error> {
-        while self.data.len() >= self.max_keys && self.eviction_policy != EvictionPolicy::NoEviction {
-            let before = self.data.len();
-            evict::evict(self)?;
-            let after = self.data.len();
-            if after >= before {
-                self.send_error("OOM command not allowed when used memory > 'maxmemory'.", client_stream)?;
-                return Ok(());
-            }
-        }
         let (key, value, expires_at) = match self.validate_and_get_set_args(args, client_stream) {
             Ok(v) => v,
             Err(_) => return Ok(()),
         };
 
-        match expires_at {
-            Some(_) => {
-                self.volatile_keys.insert(key.clone());
-            }
-            None => {
-                self.volatile_keys.remove(&key);
+        let mut rng = rand::rng();
+        while self.data.len() >= self.max_keys && !self.data.contains_key(&key) {
+            let evicted = self
+                .eviction_policy
+                .and_then(|policy| self.data.evict(policy, &mut rng));
+            if evicted.is_none() {
+                self.send_error(
+                    "OOM command not allowed when used memory > 'maxmemory'.",
+                    client_stream,
+                )?;
+                return Ok(());
             }
         }
-        self.data.insert(
-            key,
+
+        let now = self.now_millis();
+        self.data.insert_with_meta(
+            key.into(),
             RedisValue {
                 value,
                 expires_at: expires_at.unwrap_or(-1),
-                access_count: 0,
-                last_accessed_at: self.now_millis(),
             },
+            expires_at.map(|t| t as u64),
+            Some(now as u64),
         );
 
         let response = Value::SimpleString("OK".to_string());
@@ -278,21 +239,24 @@ impl RedisState {
             )?;
             return Ok(());
         }
-        let key = args[0].clone();
-        let value = match self.data.get(&key) {
-            Some(v) => v,
+        let key = &args[0];
+        let now = self.now_millis();
+        if self
+            .data
+            .get(key)
+            .is_some_and(|v| v.expires_at != -1 && v.expires_at < now)
+        {
+            self.data.remove(key);
+        }
+        let encoded = match self.data.get(key) {
+            Some(v) => encode(&v.value)?,
             None => {
                 client_stream.write_all(&encode(&Value::Null)?)?;
                 return Ok(());
             }
         };
-        if value.expires_at < self.now_millis() && value.expires_at != -1 {
-            self.remove_key(&key);
-            client_stream.write_all(&encode(&Value::Null)?)?;
-            return Ok(());
-        }
-
-        client_stream.write_all(&encode(&value.value)?)?;
+        self.data.touch(key, Some(now as u64));
+        client_stream.write_all(&encoded)?;
         Ok(())
     }
 
@@ -314,7 +278,7 @@ impl RedisState {
             return Ok(());
         }
         if value.expires_at < self.now_millis() {
-            self.remove_key(&key);
+            self.data.remove(&key);
             client_stream.write_all(&encode(&Value::Integer(-2))?)?;
             return Ok(());
         }
@@ -337,7 +301,7 @@ impl RedisState {
         }
         let mut deleted_count = 0;
         for key in args {
-            if self.remove_key(key).is_some() {
+            if self.data.remove(key).is_some() {
                 deleted_count += 1;
             }
         }
@@ -366,7 +330,6 @@ impl RedisState {
         match self.data.get_mut(key) {
             Some(v) => {
                 v.expires_at = expires_at;
-                self.volatile_keys.insert(key.clone());
             }
 
             None => {
@@ -374,6 +337,7 @@ impl RedisState {
                 return Ok(());
             }
         }
+        self.data.set_expiry(key, Some(expires_at as u64));
         client_stream.write_all(&encode(&Value::Integer(1))?)?;
         Ok(())
     }
@@ -407,8 +371,7 @@ mod tests {
             .eval_set(&argv(&["k1", "v", "PX", "1"]), &mut s)
             .unwrap(); // volatile, expires fast
         state.eval_set(&argv(&["k2", "v"]), &mut s).unwrap(); // no TTL
-        assert!(state.volatile_keys.contains("k1"));
-        assert!(!state.volatile_keys.contains("k2"));
+        assert_eq!(state.data.volatile_len(), 1, "only k1 has expiry");
 
         std::thread::sleep(std::time::Duration::from_millis(5));
         state.cleanup_expired_keys();
@@ -417,8 +380,9 @@ mod tests {
             state.data.get("k1").is_none(),
             "expired key should be swept"
         );
-        assert!(
-            !state.volatile_keys.contains("k1"),
+        assert_eq!(
+            state.data.volatile_len(),
+            0,
             "index must drop swept key"
         );
         assert!(state.data.get("k2").is_some(), "non-volatile key untouched");
@@ -432,10 +396,11 @@ mod tests {
         state
             .eval_set(&argv(&["k", "v", "EX", "100"]), &mut s)
             .unwrap();
-        assert!(state.volatile_keys.contains("k"));
+        assert_eq!(state.data.volatile_len(), 1);
         state.eval_set(&argv(&["k", "v2"]), &mut s).unwrap(); // overwrite, no TTL
-        assert!(
-            !state.volatile_keys.contains("k"),
+        assert_eq!(
+            state.data.volatile_len(),
+            0,
             "stale TTL index must clear"
         );
     }

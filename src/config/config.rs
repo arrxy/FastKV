@@ -1,12 +1,11 @@
-use crate::core::eval::EvictionPolicy;
+use chaintable::EvictionPolicy;
 
 pub struct Config {
     port: u16,
     host: String,
     cleanup_interval: u128,
     max_keys: usize,
-    eviction_sample_size: usize,
-    eviction_policy: EvictionPolicy,
+    eviction_policy: Option<EvictionPolicy>,
 }
 
 impl Config {
@@ -17,6 +16,10 @@ impl Config {
 
 impl Config {
     fn from_env() -> Self {
+        let eviction_sample_size = std::env::var("EVICTION_SAMPLE_SIZE")
+            .unwrap_or_else(|_| "20".to_string())
+            .parse()
+            .unwrap();
         Self {
             port: std::env::var("PORT")
                 .unwrap_or_else(|_| "9736".to_string())
@@ -31,23 +34,17 @@ impl Config {
                 .unwrap_or_else(|_| "1000".to_string())
                 .parse()
                 .unwrap(),
-            eviction_sample_size: std::env::var("EVICTION_SAMPLE_SIZE")
-                .unwrap_or_else(|_| "20".to_string())
-                .parse()
-                .unwrap(),
             eviction_policy: match std::env::var("EVICTION_POLICY")
                 .unwrap_or_else(|_| "NoEviction".to_string())
                 .as_str()
             {
-                "NoEviction" => EvictionPolicy::NoEviction,
-                "AllKeysRandom" => EvictionPolicy::AllKeysRandom,
-                "VolatileRandom" => EvictionPolicy::VolatileRandom,
-                "AllKeysLru" => EvictionPolicy::AllKeysLru,
-                "VolatileLru" => EvictionPolicy::VolatileLru,
-                "AllKeysLfu" => EvictionPolicy::AllKeysLfu,
-                "VolatileLfu" => EvictionPolicy::VolatileLfu,
-                "VolatileTtl" => EvictionPolicy::VolatileTtl,
-                _ => EvictionPolicy::NoEviction,
+                "AllKeysRandom" => Some(EvictionPolicy::AllkeysRandom),
+                "VolatileRandom" => Some(EvictionPolicy::VolatileRandom),
+                "AllKeysLru" => Some(EvictionPolicy::AllkeysLru { sample_size: eviction_sample_size }),
+                "VolatileLru" => Some(EvictionPolicy::VolatileLru { sample_size: eviction_sample_size }),
+                "AllKeysLfu" => Some(EvictionPolicy::AllkeysLfu { sample_size: eviction_sample_size }),
+                "VolatileLfu" => Some(EvictionPolicy::VolatileLfu { sample_size: eviction_sample_size }),
+                _ => None, // NoEviction
             },
         }
     }
@@ -68,11 +65,7 @@ impl Config {
         self.max_keys
     }
 
-    pub fn get_eviction_sample_size(&self) -> usize {
-        self.eviction_sample_size
-    }
-
-    pub fn get_eviction_policy(&self) -> EvictionPolicy {
+    pub fn get_eviction_policy(&self) -> Option<EvictionPolicy> {
         self.eviction_policy
     }
 }
