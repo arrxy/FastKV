@@ -299,9 +299,13 @@ impl RedisState {
             )?;
             return Ok(());
         }
+        let now = self.now_millis();
         let mut deleted_count = 0;
         for key in args {
-            if self.data.remove(key).is_some() {
+            let live = self.data.get(key).is_some_and(|v| {
+                v.expires_at == -1 || v.expires_at >= now
+            });
+            if live && self.data.remove(key).is_some() {
                 deleted_count += 1;
             }
         }

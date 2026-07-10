@@ -14,7 +14,7 @@ pub fn init_logger() -> LoggerGuard {
 
     #[cfg(not(feature = "local-logs"))]
     {
-        let file_appender = tracing_appender::rolling::daily("logs", "roomkv.log");
+        let file_appender = tracing_appender::rolling::daily("logs", "fast_kv.log");
 
         let (non_blocking_writer, guard) = tracing_appender::non_blocking(file_appender);
 

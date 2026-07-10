@@ -1,15 +1,9 @@
-mod config;
-mod core;
-mod logger;
-mod protocol;
-mod server;
-
-use core::processor::RespCommandProcessor;
-use server::server::Server;
+use fast_kv::core::processor::RespCommandProcessor;
+use fast_kv::server::server::Server;
 
 fn main() {
-    let _log_guard = logger::init_logger();
-    rk_info!("Starting RoomKV server");
+    let _log_guard = fast_kv::logger::init_logger();
+    println!("Starting fast_kv server");
     Server::new(RespCommandProcessor::new()).run().unwrap();
-    rk_info!("RoomKV server stopped");
+    println!("fast_kv server stopped");
 }

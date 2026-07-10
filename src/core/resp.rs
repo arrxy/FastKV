@@ -86,9 +86,15 @@ fn decode_integer(data: &[u8]) -> Result<(Value, usize), Error> {
 }
 
 fn decode_bulk_string(data: &[u8]) -> Result<(Value, usize), Error> {
-    let mut pos: usize = 1;
-    let (len, delta) = read_len(&data[1..])?;
-    pos += delta;
+    let (len, delta) = read_signed_len(&data[1..])?;
+    if len == -1 {
+        return Ok((Value::Null, 1 + delta));
+    }
+    if len < 0 {
+        return Err(Error::new(ErrorKind::InvalidData, "Invalid bulk string length"));
+    }
+    let len = len as usize;
+    let pos = 1 + delta;
     if pos + len + 2 > data.len() {
         return Err(Error::new(ErrorKind::InvalidData, "Invalid data"));
     }
@@ -123,6 +129,24 @@ pub fn decode_array_string(data: &[u8]) -> Result<Vec<String>, Error> {
         Value::Array(values) => Ok(values.into_iter().map(value_into_string).collect()),
         _ => Err(Error::new(ErrorKind::InvalidData, "Invalid data")),
     }
+}
+
+fn read_signed_len(data: &[u8]) -> Result<(i64, usize), Error> {
+    let mut pos: usize = 0;
+    let negative = pos < data.len() && data[pos] == b'-';
+    if negative {
+        pos += 1;
+    }
+    let mut len: i64 = 0;
+    while pos < data.len() {
+        let b = data[pos];
+        if !(b >= b'0' && b <= b'9') {
+            return Ok((if negative { -len } else { len }, pos + 2));
+        }
+        len = len * 10 + (b - b'0') as i64;
+        pos += 1;
+    }
+    Ok((0, 0))
 }
 
 fn read_len(data: &[u8]) -> Result<(usize, usize), Error> {
@@ -266,6 +290,7 @@ mod tests {
             Value::BulkString("Hello World".as_bytes().to_vec()),
         );
         map.insert("$0\r\n\r\n", Value::BulkString(Vec::new()));
+        map.insert("$-1\r\n", Value::Null);
         for (data, expected_value) in map {
             let (value, bytes_read) = decode_bulk_string(data.as_bytes()).unwrap();
             println!("value: {:?}, bytes_read: {}", value, bytes_read);
