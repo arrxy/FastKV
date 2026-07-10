@@ -31,7 +31,7 @@ impl Config {
                 .parse()
                 .unwrap(),
             max_keys: std::env::var("MAX_KEYS")
-                .unwrap_or_else(|_| "1000".to_string())
+                .unwrap_or_else(|_| "100000000".to_string())
                 .parse()
                 .unwrap(),
             eviction_policy: match std::env::var("EVICTION_POLICY")

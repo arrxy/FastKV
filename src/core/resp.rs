@@ -131,6 +131,55 @@ pub fn decode_array_string(data: &[u8]) -> Result<Vec<String>, Error> {
     }
 }
 
+/// Parse one or more commands from a buffer (RESP arrays and inline text).
+pub fn decode_commands(data: &[u8]) -> Result<Vec<Vec<String>>, Error> {
+    let mut commands = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        if data[pos] == b'\r' || data[pos] == b'\n' {
+            pos += 1;
+            continue;
+        }
+        let (tokens, consumed) = if data[pos] == b'*' {
+            let (value, n) = decode_one(&data[pos..])?;
+            let tokens = match value {
+                Value::Array(values) => values.into_iter().map(value_into_string).collect(),
+                _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid data")),
+            };
+            (tokens, n)
+        } else {
+            decode_inline_command(&data[pos..])?
+        };
+        if tokens.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidData, "Empty command"));
+        }
+        commands.push(tokens);
+        pos += consumed;
+    }
+    Ok(commands)
+}
+
+fn decode_inline_command(data: &[u8]) -> Result<(Vec<String>, usize), Error> {
+    let mut end = 0;
+    while end < data.len() && data[end] != b'\r' && data[end] != b'\n' {
+        end += 1;
+    }
+    if end == 0 {
+        return Err(Error::new(ErrorKind::InvalidData, "Empty inline command"));
+    }
+    let line = std::str::from_utf8(&data[..end])
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?;
+    let tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+    let mut consumed = end;
+    if consumed < data.len() && data[consumed] == b'\r' {
+        consumed += 1;
+    }
+    if consumed < data.len() && data[consumed] == b'\n' {
+        consumed += 1;
+    }
+    Ok((tokens, consumed))
+}
+
 fn read_signed_len(data: &[u8]) -> Result<(i64, usize), Error> {
     let mut pos: usize = 0;
     let negative = pos < data.len() && data[pos] == b'-';
@@ -328,6 +377,31 @@ mod tests {
             println!("value: {:?}, bytes_read: {}", value, bytes_read);
             assert_eq!(value, expected_value);
         }
+    }
+
+    #[test]
+    fn test_decode_inline_command() {
+        let cmds = decode_commands(b"PING\r\n").unwrap();
+        assert_eq!(cmds, vec![vec!["PING".to_string()]]);
+
+        let cmds = decode_commands(b"SET foo bar\r\n").unwrap();
+        assert_eq!(
+            cmds,
+            vec![vec![
+                "SET".to_string(),
+                "foo".to_string(),
+                "bar".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn test_decode_pipelined_commands() {
+        let data = b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n";
+        let cmds = decode_commands(data).unwrap();
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0], vec!["PING".to_string()]);
+        assert_eq!(cmds[1], vec!["PING".to_string()]);
     }
 
     #[test]

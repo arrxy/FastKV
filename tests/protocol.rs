@@ -43,6 +43,25 @@ fn commands_pipelining_style_sequence() {
 }
 
 #[test]
+fn inline_ping_returns_pong() {
+    let mut r = RedisTestClient::new();
+    assert_eq!(
+        r.cmd_raw(b"PING\r\n"),
+        Value::SimpleString("PONG".to_string())
+    );
+}
+
+#[test]
+fn inline_set_and_get() {
+    let mut r = RedisTestClient::new();
+    assert_eq!(
+        r.cmd_raw(b"SET inlinekey inlineval\r\n"),
+        Value::SimpleString("OK".to_string())
+    );
+    r.cmd_bulk(&["GET", "inlinekey"], "inlineval");
+}
+
+#[test]
 fn set_then_get_preserves_binary_safe_values() {
     let mut r = RedisTestClient::new();
     let value = "Hello World";

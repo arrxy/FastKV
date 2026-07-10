@@ -20,22 +20,27 @@ impl RespCommandProcessor {
 
 impl CommandProcessor for RespCommandProcessor {
     fn process(&mut self, data: &[u8], client_stream: &mut TcpStream) -> io::Result<()> {
-        let tokens = resp::decode_array_string(data)?;
+        let commands = resp::decode_commands(data).map_err(|e| {
+            io::Error::new(ErrorKind::InvalidData, e.to_string())
+        })?;
 
-        if tokens.is_empty() {
+        if commands.is_empty() {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
                 "Empty Redis command",
             ));
         }
 
-        let mut tokens = tokens.into_iter();
-        let mut cmd_name = tokens.next().expect("checked non-empty above");
-        cmd_name.make_ascii_uppercase();
-        let args: Vec<String> = tokens.collect();
-        let cmd = RedisCommand::new(cmd_name, args);
+        for tokens in commands {
+            let mut tokens = tokens.into_iter();
+            let mut cmd_name = tokens.next().expect("checked non-empty above");
+            cmd_name.make_ascii_uppercase();
+            let args: Vec<String> = tokens.collect();
+            let cmd = RedisCommand::new(cmd_name, args);
+            self.state.eval_and_respond(&cmd, client_stream)?;
+        }
 
-        self.state.eval_and_respond(&cmd, client_stream)
+        Ok(())
     }
 
     fn cleanup_expired_keys(&mut self) -> io::Result<()> {

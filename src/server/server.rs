@@ -115,7 +115,6 @@ impl<P: CommandProcessor> Server<P> {
         loop {
             match self.listener.accept() {
                 Ok((stream, _address)) => {
-                    rk_info!("[SERVER] accepted connection from {}", _address);
                     stream.set_nonblocking(true)?;
                     stream.set_nodelay(true)?;
                     let client_fd = stream.as_raw_fd();
@@ -126,7 +125,6 @@ impl<P: CommandProcessor> Server<P> {
 
                 // If the listener is blocked, break the loop. exit #1: accept queue is empty
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    rk_info!("[SERVER] accept queue is empty");
                     break;
                 }
 
