@@ -1,10 +1,8 @@
 //! Shared harness for Redis compatibility tests.
 //!
-//! Tests run commands through `RespCommandProcessor` over a loopback TCP pair,
-//! matching the production request path without binding a real port.
+//! Tests run commands through `RespCommandProcessor`, matching the
+//! production request path; responses are decoded from the output buffer.
 
-use std::io::Read;
-use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
 
@@ -14,34 +12,26 @@ use fast_kv::protocol::CommandProcessor;
 
 pub struct RedisTestClient {
     processor: RespCommandProcessor,
-    server: TcpStream,
-    client: TcpStream,
 }
 
 #[allow(dead_code)]
 impl RedisTestClient {
     pub fn new() -> Self {
-        let (client, server) = loopback();
         Self {
             processor: RespCommandProcessor::new(),
-            server,
-            client,
         }
     }
 
     pub fn cmd(&mut self, parts: &[&str]) -> Value {
-        let request = encode_cmd(parts);
-        self.processor
-            .process(&request, &mut self.server)
-            .expect("command should not close connection");
-        read_response(&mut self.client)
+        self.cmd_raw(&encode_cmd(parts))
     }
 
     pub fn cmd_raw(&mut self, raw: &[u8]) -> Value {
+        let mut out = Vec::new();
         self.processor
-            .process(raw, &mut self.server)
+            .process(raw, &mut out)
             .expect("command should not close connection");
-        read_response(&mut self.client)
+        resp::decode(&out).expect("failed to decode response")
     }
 
     pub fn cmd_ok(&mut self, parts: &[&str]) {
@@ -78,24 +68,10 @@ impl RedisTestClient {
     }
 }
 
-fn loopback() -> (TcpStream, TcpStream) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let client = TcpStream::connect(addr).unwrap();
-    let (server, _) = listener.accept().unwrap();
-    (client, server)
-}
-
 fn encode_cmd(parts: &[&str]) -> Vec<u8> {
     let mut out = format!("*{}\r\n", parts.len());
     for part in parts {
         out.push_str(&format!("${}\r\n{}\r\n", part.len(), part));
     }
     out.into_bytes()
-}
-
-fn read_response(stream: &mut TcpStream) -> Value {
-    let mut buf = vec![0u8; 4096];
-    let n = stream.read(&mut buf).expect("failed to read response");
-    resp::decode(&buf[..n]).expect("failed to decode response")
 }

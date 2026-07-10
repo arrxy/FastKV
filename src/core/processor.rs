@@ -1,5 +1,4 @@
 use std::io::{self, ErrorKind};
-use std::net::TcpStream;
 
 use crate::core::cmd::RedisCommand;
 use crate::core::eval::RedisState;
@@ -19,28 +18,20 @@ impl RespCommandProcessor {
 }
 
 impl CommandProcessor for RespCommandProcessor {
-    fn process(&mut self, data: &[u8], client_stream: &mut TcpStream) -> io::Result<()> {
-        let commands = resp::decode_commands(data).map_err(|e| {
-            io::Error::new(ErrorKind::InvalidData, e.to_string())
-        })?;
-
-        if commands.is_empty() {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "Empty Redis command",
-            ));
-        }
+    fn process(&mut self, data: &[u8], out: &mut Vec<u8>) -> io::Result<usize> {
+        let (commands, consumed) = resp::decode_commands(data)
+            .map_err(|e| io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
 
         for tokens in commands {
             let mut tokens = tokens.into_iter();
-            let mut cmd_name = tokens.next().expect("checked non-empty above");
+            let mut cmd_name = tokens.next().expect("decode_commands rejects empty");
             cmd_name.make_ascii_uppercase();
             let args: Vec<String> = tokens.collect();
             let cmd = RedisCommand::new(cmd_name, args);
-            self.state.eval_and_respond(&cmd, client_stream)?;
+            self.state.eval_and_respond(&cmd, out)?;
         }
 
-        Ok(())
+        Ok(consumed)
     }
 
     fn cleanup_expired_keys(&mut self) -> io::Result<()> {

@@ -1,6 +1,5 @@
 use std::{
     io::Write,
-    net::TcpStream,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use chaintable::{Dict, EvictionPolicy};
@@ -63,30 +62,30 @@ impl RedisState {
     pub fn eval_and_respond(
         &mut self,
         cmd: &RedisCommand,
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
         match cmd.cmd.as_str() {
-            "PING" => self.eval_ping(&cmd.args, client_stream),
-            "ECHO" => self.eval_echo(&cmd.args, client_stream),
-            "SET" => self.eval_set(&cmd.args, client_stream),
-            "GET" => self.eval_get(&cmd.args, client_stream),
-            "TTL" => self.eval_ttl(&cmd.args, client_stream),
-            "DEL" => self.eval_del(&cmd.args, client_stream),
-            "EXPIRE" => self.eval_expire(&cmd.args, client_stream),
-            _ => self.eval_ping(&cmd.args, client_stream),
+            "PING" => self.eval_ping(&cmd.args, out),
+            "ECHO" => self.eval_echo(&cmd.args, out),
+            "SET" => self.eval_set(&cmd.args, out),
+            "GET" => self.eval_get(&cmd.args, out),
+            "TTL" => self.eval_ttl(&cmd.args, out),
+            "DEL" => self.eval_del(&cmd.args, out),
+            "EXPIRE" => self.eval_expire(&cmd.args, out),
+            _ => self.eval_ping(&cmd.args, out),
         }
     }
 
     fn eval_ping(
         &self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
         if args.len() >= 2 {
             let encoded = encode(&Value::Error(
                 "ERR wrong number of arguments for 'ping' command".to_string(),
             ))?;
-            client_stream.write_all(&encoded)?;
+            out.write_all(&encoded)?;
             return Ok(());
         }
         let response = if args.is_empty() {
@@ -94,24 +93,24 @@ impl RedisState {
         } else {
             Value::BulkString(args[0].clone().into_bytes())
         };
-        client_stream.write_all(&encode(&response)?)?;
+        out.write_all(&encode(&response)?)?;
         Ok(())
     }
 
     fn eval_echo(
         &self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
         if args.len() >= 2 || args.is_empty() {
             let encoded = encode(&Value::Error(
                 "ERR wrong number of arguments for 'echo' command".to_string(),
             ))?;
-            client_stream.write_all(&encoded)?;
+            out.write_all(&encoded)?;
             return Ok(());
         }
         let response = Value::BulkString(args[0].clone().into_bytes());
-        client_stream.write_all(&encode(&response)?)?;
+        out.write_all(&encode(&response)?)?;
         Ok(())
     }
 
@@ -122,14 +121,14 @@ impl RedisState {
             .as_millis() as i64
     }
 
-    fn send_error(&self, error: &str, client_stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    fn send_error(&self, error: &str, out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         let encoded = encode(&Value::Error(error.to_string()))?;
-        client_stream.write_all(&encoded)?;
+        out.write_all(&encoded)?;
         Ok(())
     }
 
-    fn reject<T>(&self, error: &str, client_stream: &mut TcpStream) -> Result<T, std::io::Error> {
-        self.send_error(error, client_stream)?;
+    fn reject<T>(&self, error: &str, out: &mut Vec<u8>) -> Result<T, std::io::Error> {
+        self.send_error(error, out)?;
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Invalid input",
@@ -139,12 +138,12 @@ impl RedisState {
     fn validate_and_get_set_args(
         &mut self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(String, Value, Option<i64>), std::io::Error> {
         if args.len() != 2 && args.len() != 4 {
             return self.reject(
                 "ERR wrong number of arguments for 'set' command",
-                client_stream,
+                out,
             );
         }
 
@@ -153,9 +152,9 @@ impl RedisState {
             let unit_ms: i64 = match args[2].to_uppercase().as_str() {
                 "EX" => 1000,
                 "PX" => 1,
-                _ => return self.reject("ERR syntax error", client_stream),
+                _ => return self.reject("ERR syntax error", out),
             };
-            expires_at = Some(self.parse_expiry(&args[3], unit_ms, client_stream)?);
+            expires_at = Some(self.parse_expiry(&args[3], unit_ms, out)?);
         }
 
         let key = args[0].clone();
@@ -167,32 +166,32 @@ impl RedisState {
         &self,
         amount: &str,
         unit_ms: i64,
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<i64, std::io::Error> {
         let amount: i64 = match amount.parse() {
             Ok(n) => n,
             Err(_) => {
-                return self.reject("ERR value is not an integer or out of range", client_stream);
+                return self.reject("ERR value is not an integer or out of range", out);
             }
         };
         if amount <= 0 {
-            return self.reject("ERR invalid expire time in 'set' command", client_stream);
+            return self.reject("ERR invalid expire time in 'set' command", out);
         }
         match amount
             .checked_mul(unit_ms)
             .and_then(|ttl_ms| self.now_millis().checked_add(ttl_ms))
         {
             Some(expires_at) => Ok(expires_at),
-            None => self.reject("ERR value is not an integer or out of range", client_stream),
+            None => self.reject("ERR value is not an integer or out of range", out),
         }
     }
 
     fn eval_set(
         &mut self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
-        let (key, value, expires_at) = match self.validate_and_get_set_args(args, client_stream) {
+        let (key, value, expires_at) = match self.validate_and_get_set_args(args, out) {
             Ok(v) => v,
             Err(_) => return Ok(()),
         };
@@ -205,7 +204,7 @@ impl RedisState {
             if evicted.is_none() {
                 self.send_error(
                     "OOM command not allowed when used memory > 'maxmemory'.",
-                    client_stream,
+                    out,
                 )?;
                 return Ok(());
             }
@@ -223,19 +222,19 @@ impl RedisState {
         );
 
         let response = Value::SimpleString("OK".to_string());
-        client_stream.write_all(&encode(&response)?)?;
+        out.write_all(&encode(&response)?)?;
         Ok(())
     }
 
     fn eval_get(
         &mut self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
         if args.len() != 1 {
             self.send_error(
                 "ERR wrong number of arguments for 'get' command",
-                client_stream,
+                out,
             )?;
             return Ok(());
         }
@@ -251,51 +250,51 @@ impl RedisState {
         let encoded = match self.data.get(key) {
             Some(v) => encode(&v.value)?,
             None => {
-                client_stream.write_all(&encode(&Value::Null)?)?;
+                out.write_all(&encode(&Value::Null)?)?;
                 return Ok(());
             }
         };
         self.data.touch(key, Some(now as u64));
-        client_stream.write_all(&encoded)?;
+        out.write_all(&encoded)?;
         Ok(())
     }
 
     fn eval_ttl(
         &mut self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
         let key = args[0].clone();
         let value = match self.data.get(&key) {
             Some(v) => v,
             None => {
-                client_stream.write_all(&encode(&Value::Integer(-2))?)?;
+                out.write_all(&encode(&Value::Integer(-2))?)?;
                 return Ok(());
             }
         };
         if value.expires_at == -1 {
-            client_stream.write_all(&encode(&Value::Integer(-1))?)?;
+            out.write_all(&encode(&Value::Integer(-1))?)?;
             return Ok(());
         }
         if value.expires_at < self.now_millis() {
             self.data.remove(&key);
-            client_stream.write_all(&encode(&Value::Integer(-2))?)?;
+            out.write_all(&encode(&Value::Integer(-2))?)?;
             return Ok(());
         }
         let response_in_seconds = Value::Integer((value.expires_at - self.now_millis()) / 1000);
-        client_stream.write_all(&encode(&response_in_seconds)?)?;
+        out.write_all(&encode(&response_in_seconds)?)?;
         Ok(())
     }
 
     fn eval_del(
         &mut self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
         if args.len() == 0 {
             self.send_error(
                 "ERR wrong number of arguments for 'del' command",
-                client_stream,
+                out,
             )?;
             return Ok(());
         }
@@ -310,24 +309,24 @@ impl RedisState {
             }
         }
         let response = Value::Integer(deleted_count);
-        client_stream.write_all(&encode(&response)?)?;
+        out.write_all(&encode(&response)?)?;
         Ok(())
     }
 
     fn eval_expire(
         &mut self,
         args: &[String],
-        client_stream: &mut TcpStream,
+        out: &mut Vec<u8>,
     ) -> Result<(), std::io::Error> {
         if args.len() != 2 {
             self.send_error(
                 "ERR wrong number of arguments for 'expire' command",
-                client_stream,
+                out,
             )?;
             return Ok(());
         };
         let key = &args[0];
-        let expires_at = match self.parse_expiry(&args[1], 1000, client_stream) {
+        let expires_at = match self.parse_expiry(&args[1], 1000, out) {
             Ok(v) => v,
             Err(_) => return Ok(()),
         };
@@ -337,12 +336,12 @@ impl RedisState {
             }
 
             None => {
-                client_stream.write_all(&encode(&Value::Integer(0))?)?;
+                out.write_all(&encode(&Value::Integer(0))?)?;
                 return Ok(());
             }
         }
         self.data.set_expiry(key, Some(expires_at as u64));
-        client_stream.write_all(&encode(&Value::Integer(1))?)?;
+        out.write_all(&encode(&Value::Integer(1))?)?;
         Ok(())
     }
 }
@@ -350,17 +349,6 @@ impl RedisState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
-
-    // A connected loopback stream; the server side is returned so the
-    // connection isn't reset and small writes don't fail.
-    fn loopback() -> (TcpStream, TcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let client = TcpStream::connect(addr).unwrap();
-        let (server, _) = listener.accept().unwrap();
-        (client, server)
-    }
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
@@ -369,7 +357,7 @@ mod tests {
     #[test]
     fn cleanup_removes_only_expired_volatile_keys() {
         let mut state = RedisState::new();
-        let (mut s, _server) = loopback();
+        let mut s = Vec::new();
 
         state
             .eval_set(&argv(&["k1", "v", "PX", "1"]), &mut s)
@@ -395,7 +383,7 @@ mod tests {
     #[test]
     fn overwriting_volatile_key_without_ttl_clears_index() {
         let mut state = RedisState::new();
-        let (mut s, _server) = loopback();
+        let mut s = Vec::new();
 
         state
             .eval_set(&argv(&["k", "v", "EX", "100"]), &mut s)

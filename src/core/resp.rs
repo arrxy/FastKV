@@ -131,8 +131,11 @@ pub fn decode_array_string(data: &[u8]) -> Result<Vec<String>, Error> {
     }
 }
 
-/// Parse one or more commands from a buffer (RESP arrays and inline text).
-pub fn decode_commands(data: &[u8]) -> Result<Vec<Vec<String>>, Error> {
+/// Parse complete commands from a buffer (RESP arrays and inline text).
+/// Returns the commands plus how many bytes were consumed; a trailing
+/// partial command is left unconsumed so the caller can retry once more
+/// bytes arrive.
+pub fn decode_commands(data: &[u8]) -> Result<(Vec<Vec<String>>, usize), Error> {
     let mut commands = Vec::new();
     let mut pos = 0;
     while pos < data.len() {
@@ -140,15 +143,22 @@ pub fn decode_commands(data: &[u8]) -> Result<Vec<Vec<String>>, Error> {
             pos += 1;
             continue;
         }
-        let (tokens, consumed) = if data[pos] == b'*' {
-            let (value, n) = decode_one(&data[pos..])?;
-            let tokens = match value {
-                Value::Array(values) => values.into_iter().map(value_into_string).collect(),
-                _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid data")),
-            };
-            (tokens, n)
+        let parsed = if data[pos] == b'*' {
+            // Any parse failure on a RESP array is treated as
+            // "incomplete, wait for more bytes"; the server's input-buffer
+            // cap is what eventually kills a truly malformed client.
+            match decode_one(&data[pos..]) {
+                Ok((Value::Array(values), n)) => {
+                    Some((values.into_iter().map(value_into_string).collect(), n))
+                }
+                Ok(_) => return Err(Error::new(ErrorKind::InvalidData, "Invalid data")),
+                Err(_) => None,
+            }
         } else {
-            decode_inline_command(&data[pos..])?
+            decode_inline_command(&data[pos..])
+        };
+        let Some((tokens, consumed)) = parsed else {
+            break;
         };
         if tokens.is_empty() {
             return Err(Error::new(ErrorKind::InvalidData, "Empty command"));
@@ -156,28 +166,15 @@ pub fn decode_commands(data: &[u8]) -> Result<Vec<Vec<String>>, Error> {
         commands.push(tokens);
         pos += consumed;
     }
-    Ok(commands)
+    Ok((commands, pos))
 }
 
-fn decode_inline_command(data: &[u8]) -> Result<(Vec<String>, usize), Error> {
-    let mut end = 0;
-    while end < data.len() && data[end] != b'\r' && data[end] != b'\n' {
-        end += 1;
-    }
-    if end == 0 {
-        return Err(Error::new(ErrorKind::InvalidData, "Empty inline command"));
-    }
-    let line = std::str::from_utf8(&data[..end])
-        .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?;
+/// Returns None until a full newline-terminated line is available.
+fn decode_inline_command(data: &[u8]) -> Option<(Vec<String>, usize)> {
+    let end = data.iter().position(|&b| b == b'\n')?;
+    let line = String::from_utf8_lossy(&data[..end]);
     let tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
-    let mut consumed = end;
-    if consumed < data.len() && data[consumed] == b'\r' {
-        consumed += 1;
-    }
-    if consumed < data.len() && data[consumed] == b'\n' {
-        consumed += 1;
-    }
-    Ok((tokens, consumed))
+    Some((tokens, end + 1))
 }
 
 fn read_signed_len(data: &[u8]) -> Result<(i64, usize), Error> {
@@ -381,10 +378,11 @@ mod tests {
 
     #[test]
     fn test_decode_inline_command() {
-        let cmds = decode_commands(b"PING\r\n").unwrap();
+        let (cmds, consumed) = decode_commands(b"PING\r\n").unwrap();
         assert_eq!(cmds, vec![vec!["PING".to_string()]]);
+        assert_eq!(consumed, 6);
 
-        let cmds = decode_commands(b"SET foo bar\r\n").unwrap();
+        let (cmds, _) = decode_commands(b"SET foo bar\r\n").unwrap();
         assert_eq!(
             cmds,
             vec![vec![
@@ -398,10 +396,25 @@ mod tests {
     #[test]
     fn test_decode_pipelined_commands() {
         let data = b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n";
-        let cmds = decode_commands(data).unwrap();
+        let (cmds, consumed) = decode_commands(data).unwrap();
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0], vec!["PING".to_string()]);
         assert_eq!(cmds[1], vec!["PING".to_string()]);
+        assert_eq!(consumed, data.len());
+    }
+
+    #[test]
+    fn test_decode_partial_command_left_unconsumed() {
+        // one complete SET plus the first half of another command
+        let data = b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n*3\r\n$3\r\nSET\r\n$1";
+        let (cmds, consumed) = decode_commands(data).unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(consumed, 27, "partial trailing command must not be consumed");
+
+        // inline command without a newline yet
+        let (cmds, consumed) = decode_commands(b"PIN").unwrap();
+        assert!(cmds.is_empty());
+        assert_eq!(consumed, 0);
     }
 
     #[test]

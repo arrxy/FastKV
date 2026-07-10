@@ -9,12 +9,22 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// A client with this much unparseable input pending is broken or abusive.
+const MAX_INPUT_BUFFER: usize = 64 * 1024 * 1024;
+
+struct Connection {
+    stream: TcpStream,
+    // bytes read but not yet parsed as a complete command
+    input: Vec<u8>,
+}
+
 pub struct Server<P: CommandProcessor> {
     listener: TcpListener,
     poller: OsPoller,
-    connections: HashMap<RawFd, TcpStream>,
+    connections: HashMap<RawFd, Connection>,
     con_clients: u64,
     events_buf: Vec<EventObject>,
+    out_buf: Vec<u8>,
     processor: P,
     last_cleanup_time: u128,
     cleanup_interval: u128,
@@ -29,6 +39,7 @@ impl<P: CommandProcessor> Server<P> {
             connections: HashMap::new(),
             con_clients: 0,
             events_buf: Vec::new(),
+            out_buf: Vec::new(),
             processor,
             last_cleanup_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -83,8 +94,8 @@ impl<P: CommandProcessor> Server<P> {
             rk_info!("[CLOSE] failed to delete fd {} from poller: {}", fd, e);
         }
 
-        if let Some(stream) = self.connections.remove(&fd) {
-            let _ = stream.shutdown(Shutdown::Both);
+        if let Some(conn) = self.connections.remove(&fd) {
+            let _ = conn.stream.shutdown(Shutdown::Both);
         }
 
         self.con_clients = self.con_clients.saturating_sub(1);
@@ -119,7 +130,13 @@ impl<P: CommandProcessor> Server<P> {
                     stream.set_nodelay(true)?;
                     let client_fd = stream.as_raw_fd();
                     self.poller.add(EventObject::client(client_fd))?;
-                    self.connections.insert(client_fd, stream);
+                    self.connections.insert(
+                        client_fd,
+                        Connection {
+                            stream,
+                            input: Vec::new(),
+                        },
+                    );
                     self.con_clients += 1;
                 }
 
@@ -144,20 +161,27 @@ impl<P: CommandProcessor> Server<P> {
 
     fn handle_client_events(&mut self, event: &EventObject) -> Result<(), std::io::Error> {
         let fd = event.fd;
+        let Some(conn) = self.connections.get_mut(&fd) else {
+            return Ok(());
+        };
 
-        let should_close = {
-            let Some(client_stream) = self.connections.get_mut(&fd) else {
-                return Ok(());
-            };
-
-            let mut buffer: [u8; 16384] = [0; 16384];
-            match client_stream.read(&mut buffer) {
-                Ok(0) => true,
-
-                Ok(n) => self.processor.process(&buffer[..n], client_stream).is_err(),
-
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(()),
-
+        // Drain the socket into the connection's input buffer.
+        let mut peer_closed = false;
+        let mut should_close = false;
+        let mut buffer: [u8; 16384] = [0; 16384];
+        loop {
+            match conn.stream.read(&mut buffer) {
+                Ok(0) => {
+                    peer_closed = true;
+                    break;
+                }
+                Ok(n) => {
+                    conn.input.extend_from_slice(&buffer[..n]);
+                    if n < buffer.len() {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => {
                     rk_info!(
                         "[CLIENT] error reading from fd {}: kind={:?}, err={}",
@@ -165,14 +189,54 @@ impl<P: CommandProcessor> Server<P> {
                         e.kind(),
                         e
                     );
-                    true
+                    should_close = true;
+                    break;
                 }
             }
-        };
+        }
 
-        if should_close {
+        // Execute every complete command; leftover bytes wait for the next read.
+        self.out_buf.clear();
+        if !should_close && !conn.input.is_empty() {
+            match self.processor.process(&conn.input, &mut self.out_buf) {
+                Ok(consumed) => {
+                    conn.input.drain(..consumed);
+                }
+                Err(_) => should_close = true,
+            }
+        }
+
+        // One write syscall for the whole pipeline of responses.
+        if !should_close && !self.out_buf.is_empty() {
+            should_close = write_all_blocking(&mut conn.stream, &self.out_buf).is_err();
+        }
+
+        if conn.input.len() > MAX_INPUT_BUFFER {
+            should_close = true;
+        }
+
+        if should_close || peer_closed {
             self.close_client(fd);
         }
         Ok(())
     }
+}
+
+// on WouldBlock this spins until the client drains its socket,
+// stalling the event loop; switch to per-connection output buffers +
+// writable-interest if slow clients become a real workload.
+fn write_all_blocking(stream: &mut TcpStream, buf: &[u8]) -> std::io::Result<()> {
+    let mut written = 0;
+    while written < buf.len() {
+        match stream.write(&buf[written..]) {
+            Ok(n) => written += n,
+            Err(e)
+                if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
