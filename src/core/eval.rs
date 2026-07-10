@@ -1,12 +1,14 @@
+use chaintable::{Dict, EvictionPolicy};
 use std::{
     io::Write,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use chaintable::{Dict, EvictionPolicy};
 
 use crate::{
-    config::config::Config, core::{
-        cmd::RedisCommand, resp::{Value, encode},
+    config::config::Config,
+    core::{
+        cmd::RedisCommand,
+        resp::{Value, encode},
     },
 };
 
@@ -76,11 +78,7 @@ impl RedisState {
         }
     }
 
-    fn eval_ping(
-        &self,
-        args: &[String],
-        out: &mut Vec<u8>,
-    ) -> Result<(), std::io::Error> {
+    fn eval_ping(&self, args: &[String], out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         if args.len() >= 2 {
             let encoded = encode(&Value::Error(
                 "ERR wrong number of arguments for 'ping' command".to_string(),
@@ -97,11 +95,7 @@ impl RedisState {
         Ok(())
     }
 
-    fn eval_echo(
-        &self,
-        args: &[String],
-        out: &mut Vec<u8>,
-    ) -> Result<(), std::io::Error> {
+    fn eval_echo(&self, args: &[String], out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         if args.len() >= 2 || args.is_empty() {
             let encoded = encode(&Value::Error(
                 "ERR wrong number of arguments for 'echo' command".to_string(),
@@ -141,10 +135,7 @@ impl RedisState {
         out: &mut Vec<u8>,
     ) -> Result<(String, Value, Option<i64>), std::io::Error> {
         if args.len() != 2 && args.len() != 4 {
-            return self.reject(
-                "ERR wrong number of arguments for 'set' command",
-                out,
-            );
+            return self.reject("ERR wrong number of arguments for 'set' command", out);
         }
 
         let mut expires_at: Option<i64> = None;
@@ -186,11 +177,7 @@ impl RedisState {
         }
     }
 
-    fn eval_set(
-        &mut self,
-        args: &[String],
-        out: &mut Vec<u8>,
-    ) -> Result<(), std::io::Error> {
+    fn eval_set(&mut self, args: &[String], out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         let (key, value, expires_at) = match self.validate_and_get_set_args(args, out) {
             Ok(v) => v,
             Err(_) => return Ok(()),
@@ -226,16 +213,9 @@ impl RedisState {
         Ok(())
     }
 
-    fn eval_get(
-        &mut self,
-        args: &[String],
-        out: &mut Vec<u8>,
-    ) -> Result<(), std::io::Error> {
+    fn eval_get(&mut self, args: &[String], out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         if args.len() != 1 {
-            self.send_error(
-                "ERR wrong number of arguments for 'get' command",
-                out,
-            )?;
+            self.send_error("ERR wrong number of arguments for 'get' command", out)?;
             return Ok(());
         }
         let key = &args[0];
@@ -259,11 +239,7 @@ impl RedisState {
         Ok(())
     }
 
-    fn eval_ttl(
-        &mut self,
-        args: &[String],
-        out: &mut Vec<u8>,
-    ) -> Result<(), std::io::Error> {
+    fn eval_ttl(&mut self, args: &[String], out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         let key = args[0].clone();
         let value = match self.data.get(&key) {
             Some(v) => v,
@@ -286,24 +262,18 @@ impl RedisState {
         Ok(())
     }
 
-    fn eval_del(
-        &mut self,
-        args: &[String],
-        out: &mut Vec<u8>,
-    ) -> Result<(), std::io::Error> {
+    fn eval_del(&mut self, args: &[String], out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         if args.len() == 0 {
-            self.send_error(
-                "ERR wrong number of arguments for 'del' command",
-                out,
-            )?;
+            self.send_error("ERR wrong number of arguments for 'del' command", out)?;
             return Ok(());
         }
         let now = self.now_millis();
         let mut deleted_count = 0;
         for key in args {
-            let live = self.data.get(key).is_some_and(|v| {
-                v.expires_at == -1 || v.expires_at >= now
-            });
+            let live = self
+                .data
+                .get(key)
+                .is_some_and(|v| v.expires_at == -1 || v.expires_at >= now);
             if live && self.data.remove(key).is_some() {
                 deleted_count += 1;
             }
@@ -313,16 +283,9 @@ impl RedisState {
         Ok(())
     }
 
-    fn eval_expire(
-        &mut self,
-        args: &[String],
-        out: &mut Vec<u8>,
-    ) -> Result<(), std::io::Error> {
+    fn eval_expire(&mut self, args: &[String], out: &mut Vec<u8>) -> Result<(), std::io::Error> {
         if args.len() != 2 {
-            self.send_error(
-                "ERR wrong number of arguments for 'expire' command",
-                out,
-            )?;
+            self.send_error("ERR wrong number of arguments for 'expire' command", out)?;
             return Ok(());
         };
         let key = &args[0];
@@ -372,11 +335,7 @@ mod tests {
             state.data.get("k1").is_none(),
             "expired key should be swept"
         );
-        assert_eq!(
-            state.data.volatile_len(),
-            0,
-            "index must drop swept key"
-        );
+        assert_eq!(state.data.volatile_len(), 0, "index must drop swept key");
         assert!(state.data.get("k2").is_some(), "non-volatile key untouched");
     }
 
@@ -390,10 +349,6 @@ mod tests {
             .unwrap();
         assert_eq!(state.data.volatile_len(), 1);
         state.eval_set(&argv(&["k", "v2"]), &mut s).unwrap(); // overwrite, no TTL
-        assert_eq!(
-            state.data.volatile_len(),
-            0,
-            "stale TTL index must clear"
-        );
+        assert_eq!(state.data.volatile_len(), 0, "stale TTL index must clear");
     }
 }

@@ -91,7 +91,10 @@ fn decode_bulk_string(data: &[u8]) -> Result<(Value, usize), Error> {
         return Ok((Value::Null, 1 + delta));
     }
     if len < 0 {
-        return Err(Error::new(ErrorKind::InvalidData, "Invalid bulk string length"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "Invalid bulk string length",
+        ));
     }
     let len = len as usize;
     let pos = 1 + delta;
@@ -409,7 +412,10 @@ mod tests {
         let data = b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n*3\r\n$3\r\nSET\r\n$1";
         let (cmds, consumed) = decode_commands(data).unwrap();
         assert_eq!(cmds.len(), 1);
-        assert_eq!(consumed, 27, "partial trailing command must not be consumed");
+        assert_eq!(
+            consumed, 27,
+            "partial trailing command must not be consumed"
+        );
 
         // inline command without a newline yet
         let (cmds, consumed) = decode_commands(b"PIN").unwrap();

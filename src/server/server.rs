@@ -230,9 +230,7 @@ fn write_all_blocking(stream: &mut TcpStream, buf: &[u8]) -> std::io::Result<()>
     while written < buf.len() {
         match stream.write(&buf[written..]) {
             Ok(n) => written += n,
-            Err(e)
-                if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted =>
-            {
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
                 continue;
             }
             Err(e) => return Err(e),

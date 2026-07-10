@@ -40,10 +40,18 @@ impl Config {
             {
                 "AllKeysRandom" => Some(EvictionPolicy::AllkeysRandom),
                 "VolatileRandom" => Some(EvictionPolicy::VolatileRandom),
-                "AllKeysLru" => Some(EvictionPolicy::AllkeysLru { sample_size: eviction_sample_size }),
-                "VolatileLru" => Some(EvictionPolicy::VolatileLru { sample_size: eviction_sample_size }),
-                "AllKeysLfu" => Some(EvictionPolicy::AllkeysLfu { sample_size: eviction_sample_size }),
-                "VolatileLfu" => Some(EvictionPolicy::VolatileLfu { sample_size: eviction_sample_size }),
+                "AllKeysLru" => Some(EvictionPolicy::AllkeysLru {
+                    sample_size: eviction_sample_size,
+                }),
+                "VolatileLru" => Some(EvictionPolicy::VolatileLru {
+                    sample_size: eviction_sample_size,
+                }),
+                "AllKeysLfu" => Some(EvictionPolicy::AllkeysLfu {
+                    sample_size: eviction_sample_size,
+                }),
+                "VolatileLfu" => Some(EvictionPolicy::VolatileLfu {
+                    sample_size: eviction_sample_size,
+                }),
                 _ => None, // NoEviction
             },
         }
